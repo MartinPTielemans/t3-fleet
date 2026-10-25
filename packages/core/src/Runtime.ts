@@ -110,8 +110,11 @@ export const newBuild = (bundle: string, every: Duration.Input = Duration.minute
  * the new build is seen: the relay's event streams never end, so its server
  * would otherwise wait out its whole graceful shutdown first. With `drain`
  * the service keeps running until `drain` completes (the model proxy waits
- * for its responses in flight), and `exit` is called once the service has
- * stopped, its own finalizers included.
+ * for its responses in flight), then `exit` is called and the service stops.
+ * `exit` must not wait for the stop: a server's close waits for every client
+ * connection, and a request that arrives on a kept-alive one while the
+ * server shuts down is never answered, so its connection never closes and
+ * the process would stay up, listening on nothing, until the unit kills it.
  *
  * `restart` ends it the same way, for another reason (the relay: settings it
  * reads only when it starts changed), saying that reason. Without `drain` only.
@@ -126,7 +129,6 @@ export const untilReplaced = <A, E, R, R2, R3 = never, R4 = never>(
   },
 ) =>
   Effect.suspend(() => {
-    let drained = false;
     const drain = options.drain;
     const NEW_BUILD = "a new T3 Fleet build is installed; exiting so the service restarts on it";
     const why =
@@ -144,19 +146,9 @@ export const untilReplaced = <A, E, R, R2, R3 = never, R4 = never>(
               ).pipe(
                 Effect.andThen(drain),
                 Effect.andThen(Console.log("exiting so the service restarts on the new build")),
-                Effect.andThen(
-                  Effect.sync(() => {
-                    drained = true;
-                  }),
-                ),
+                Effect.andThen(Effect.sync(options.exit)),
               ),
         ),
-      ),
-    ).pipe(
-      Effect.tap(() =>
-        Effect.sync(() => {
-          if (drained) options.exit();
-        }),
       ),
     );
   });
