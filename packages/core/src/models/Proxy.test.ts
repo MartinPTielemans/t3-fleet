@@ -27,7 +27,7 @@ import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServer from "effect/unstable/http/HttpServer";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { ModelProxyStats } from "../Api.ts";
+import { ModelProxyLimits, ModelProxyStats } from "../Api.ts";
 import { egressLayer } from "./Egress.ts";
 import { untilReplaced } from "../Runtime.ts";
 import {
@@ -189,6 +189,11 @@ const stats = async (base: string) =>
     await (await fetch(`${base}/stats`)).text(),
   );
 
+const limits = async (base: string) =>
+  Schema.decodeSync(Schema.fromJsonString(ModelProxyLimits))(
+    await (await fetch(`${base}/limits`)).text(),
+  );
+
 describe("model proxy against a fake upstream", () => {
   it("forwards the client's request unchanged, auth and identity headers included", async () => {
     const up = await upstream((_req, res) =>
@@ -247,6 +252,38 @@ describe("model proxy against a fake upstream", () => {
       "openai",
       "local",
     ]);
+  });
+
+  it("keeps the plan-limit headers of each upstream's latest answer that had them", async () => {
+    const up = await upstream((_req, res, n) =>
+      n === 3
+        ? res.writeHead(200).end("{}")
+        : res
+            .writeHead(n === 1 ? 200 : 429, {
+              "anthropic-ratelimit-unified-5h-utilization": n === 1 ? "0.25" : "1",
+              "anthropic-ratelimit-unified-5h-reset": "1792950000",
+              "anthropic-ratelimit-unified-status": n === 1 ? "allowed" : "rejected",
+              "request-id": `req_${n}`,
+            })
+            .end("{}"),
+    );
+    const base = await proxy(up.url, { maxRetries: 0 });
+    expect((await limits(base)).upstreams).toEqual([]);
+    const send = () => fetch(`${base}/anthropic/v1/messages`, { method: "POST", body: "{}" });
+    await send();
+    expect((await limits(base)).upstreams[0]?.headers).toEqual({
+      "anthropic-ratelimit-unified-5h-utilization": "0.25",
+      "anthropic-ratelimit-unified-5h-reset": "1792950000",
+      "anthropic-ratelimit-unified-status": "allowed",
+    });
+    // A rejection says the most about the limits; an answer without them changes nothing.
+    await send();
+    await send();
+    const [anthropic, ...others] = (await limits(base)).upstreams;
+    expect(others).toEqual([]);
+    expect(anthropic?.upstream).toBe("anthropic");
+    expect(anthropic?.headers["anthropic-ratelimit-unified-status"]).toBe("rejected");
+    expect(anthropic?.headers["anthropic-ratelimit-unified-5h-utilization"]).toBe("1");
   });
 
   it("retries 503 and 529 before the first byte, then answers", async () => {
@@ -455,6 +492,7 @@ describe("model proxy against a fake upstream", () => {
     expect(await status({ host: `evil.example:${port}` })).toBe(421);
     expect(await status({ host: `127.0.0.1:${port + 1}` })).toBe(421);
     expect(await status({ host: `evil.example:${port}` }, "/stats")).toBe(421);
+    expect(await status({ host: `evil.example:${port}` }, "/limits")).toBe(421);
     expect(await status({ host: `localhost:${port}`, origin: "http://evil.example" })).toBe(403);
     expect(up.seen.length).toBe(0);
     expect(await status({ host: `localhost:${port}` })).toBe(200);

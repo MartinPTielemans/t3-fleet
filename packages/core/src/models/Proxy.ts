@@ -7,6 +7,9 @@
  *                        for a ChatGPT login, chatgpt.com/backend-api/codex,
  *                        and any upstream [models.upstreams] declares
  *   GET /stats         ModelProxyStats
+ *   GET /limits        ModelProxyLimits: the plan-limit headers of each
+ *                      upstream's latest answer, for a usage meter that
+ *                      cannot read the login the CLI uses
  *   GET /health
  *
  * It is a pass-through: the CLI makes every request with its own credential
@@ -68,7 +71,12 @@ import * as HttpServer from "effect/unstable/http/HttpServer";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 
-import { ModelProxyStats, type ModelFailureClass } from "../Api.ts";
+import {
+  ModelProxyLimits,
+  ModelProxyStats,
+  type ModelFailureClass,
+  type ModelUpstreamLimits,
+} from "../Api.ts";
 import {
   EGRESS_BASE_HEADER,
   EGRESS_FAILURE_HEADER,
@@ -77,6 +85,7 @@ import {
   failureClassOf,
   isTimeoutCode,
   KEEPALIVE,
+  limitHeaders,
   logPath,
   neverSent,
   RELAY_TOKEN_HEADER,
@@ -129,6 +138,7 @@ export interface ModelProxyOptions {
 }
 
 const encodeStats = Schema.encodeEffect(Schema.fromJsonString(ModelProxyStats));
+const encodeLimits = Schema.encodeEffect(Schema.fromJsonString(ModelProxyLimits));
 const KEEPALIVE_BYTES = new TextEncoder().encode(KEEPALIVE);
 
 // ---- requests in flight ----------------------------------------------------
@@ -387,6 +397,8 @@ export const modelProxyLayer = (options: ModelProxyOptions) => {
       // Records are written from response streams, which must need nothing from outside.
       const services = yield* Effect.context<FileSystem.FileSystem>();
       const client = yield* HttpClient.HttpClient;
+      // The latest plan-limit headers per upstream, replaced by each answer that has them.
+      const limits = new Map<string, ModelUpstreamLimits>();
 
       const remember = (record: RequestRecord) =>
         Effect.gen(function* () {
@@ -422,6 +434,24 @@ export const modelProxyLayer = (options: ModelProxyOptions) => {
                 fallbacks,
               }),
             );
+            return HttpServerResponse.text(body, { contentType: "application/json" });
+          }).pipe(
+            Effect.orElseSucceed(() =>
+              HttpServerResponse.text("Internal Server Error", { status: 500 }),
+            ),
+          ),
+        ),
+      );
+
+      const limitsRoute = HttpRouter.add(
+        "GET",
+        "/limits",
+        guarded(
+          Effect.gen(function* () {
+            const body = yield* encodeLimits({
+              at: yield* Clock.currentTimeMillis,
+              upstreams: [...limits.values()],
+            });
             return HttpServerResponse.text(body, { contentType: "application/json" });
           }).pipe(
             Effect.orElseSucceed(() =>
@@ -583,6 +613,9 @@ export const modelProxyLayer = (options: ModelProxyOptions) => {
           }
           const ttfbMs = now - started;
           const status = response.status;
+          const limited = limitHeaders(response.headers);
+          if (Object.keys(limited).length > 0)
+            limits.set(upstream, { upstream, at: now, headers: limited });
           const statusFailure = failureClassOf(status);
           const finished = {
             status,
@@ -645,7 +678,12 @@ export const modelProxyLayer = (options: ModelProxyOptions) => {
         }
       }).pipe(Effect.provideService(HttpClient.HttpClient, client));
 
-      return Layer.mergeAll(health, stats, HttpRouter.add("*", "/*", guarded(forward)));
+      return Layer.mergeAll(
+        health,
+        stats,
+        limitsRoute,
+        HttpRouter.add("*", "/*", guarded(forward)),
+      );
     }),
   ).pipe(
     Layer.provide(
