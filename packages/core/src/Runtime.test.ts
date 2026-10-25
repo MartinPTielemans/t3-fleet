@@ -41,7 +41,7 @@ describe("untilReplaced", () => {
     expect(events).toEqual(["exit", "stopped"]);
   });
 
-  it("with drain, keeps the service running until the drain is done, and exits once it has stopped", async () => {
+  it("with drain, keeps the service running until the drain is done, then exits and stops it", async () => {
     const events: Array<string> = [];
     const replaced = Deferred.makeUnsafe<void>();
     const drained = Deferred.makeUnsafe<void>();
@@ -58,7 +58,24 @@ describe("untilReplaced", () => {
     expect(events).toEqual([]);
     Effect.runSync(Deferred.succeed(drained, undefined));
     await Effect.runPromise(Fiber.await(fiber));
-    expect(events).toEqual(["drained", "stopped", "exit"]);
+    expect(events).toEqual(["drained", "exit", "stopped"]);
+  });
+
+  it("with drain, exits even when the service never finishes stopping", async () => {
+    // A server whose close waits on a kept-alive connection that never closes.
+    const stuck = Effect.never.pipe(Effect.onInterrupt(() => Effect.never));
+    const events: Array<string> = [];
+    const replaced = Deferred.makeUnsafe<void>();
+    const fiber = Effect.runFork(
+      untilReplaced(stuck, Deferred.await(replaced), {
+        drain: Effect.void,
+        exit: () => events.push("exit"),
+      }),
+    );
+    Effect.runSync(Deferred.succeed(replaced, undefined));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(events).toEqual(["exit"]);
+    Effect.runFork(Fiber.interrupt(fiber));
   });
 
   it("exits the same way for a restart, saying its reason (the relay's settings changed)", async () => {
