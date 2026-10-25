@@ -53,6 +53,22 @@ export const requestHeaders = (
   return out;
 };
 
+/**
+ * A response's plan-limit headers, for /limits: what a subscription login's
+ * answers say about its session and weekly limits (Claude's
+ * anthropic-ratelimit-unified-*). Empty when there are none, as for an API key.
+ */
+export const limitHeaders = (
+  headers: Readonly<Record<string, string | undefined>>,
+): Record<string, string> => {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    const lower = name.toLowerCase();
+    if (value !== undefined && lower.startsWith("anthropic-ratelimit-unified-")) out[lower] = value;
+  }
+  return out;
+};
+
 /** The response's headers for the client; content-type travels separately. */
 export const responseHeaders = (
   headers: Readonly<Record<string, string | undefined>>,

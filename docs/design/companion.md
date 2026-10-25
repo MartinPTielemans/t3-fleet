@@ -61,6 +61,10 @@ existing `[proxy]` settings; that path stays as it is.
   (`https://api.anthropic.com`), `openai` (the ChatGPT backend for a ChatGPT
   login, `https://api.openai.com/v1` for an API key), and any upstream the
   settings declare. `GET /stats` returns `ModelProxyStats`; `GET /health`.
+  `GET /limits` returns `ModelProxyLimits`: the `anthropic-ratelimit-unified-*`
+  headers of each upstream's latest answer that had them. A usage meter
+  can't read a setup-token login's limits itself, but every answer the proxy
+  forwards carries them, so this needs no credential and no extra request.
 - Retries: on network errors from before the request left (refused,
   unresolvable, connect timeout, TLS handshake), and on 408, 429, 500, 502,
   503, 504, 529, up to 3 retries with jittered backoff, only before the first

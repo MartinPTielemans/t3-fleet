@@ -5,6 +5,7 @@
  * both ends, so they agree by construction.
  *
  *   model proxy  GET /stats                    ModelProxyStats
+ *                GET /limits                   ModelProxyLimits
  *   relay (hub)  GET /hub/servers              HubServer[]
  *                POST /hub/servers/<n>/login   HubLoginStart
  *                GET /hub/calls                HubCall[]
@@ -85,6 +86,25 @@ export const ModelProxyStats = Schema.Struct({
   upstreams: Schema.Array(ModelUpstreamStats),
 });
 export type ModelProxyStats = typeof ModelProxyStats.Type;
+
+/**
+ * The plan-limit headers of an upstream's latest answer that carried any,
+ * as the upstream sent them (Forward.ts names which). Kept in memory only;
+ * an upstream appears once it has answered with them since the proxy started.
+ */
+export const ModelUpstreamLimits = Schema.Struct({
+  upstream: Schema.String,
+  /** When that answer arrived, ms since the epoch. */
+  at: Schema.Number,
+  headers: Schema.Record(Schema.String, Schema.String),
+});
+export type ModelUpstreamLimits = typeof ModelUpstreamLimits.Type;
+
+export const ModelProxyLimits = Schema.Struct({
+  at: Schema.Number,
+  upstreams: Schema.Array(ModelUpstreamLimits),
+});
+export type ModelProxyLimits = typeof ModelProxyLimits.Type;
 
 /**
  * One T3 provider instance's login and health, as T3 itself reports it
